@@ -4,7 +4,7 @@ authors:
   - "@saifshaikh48"
 reviewers: # Include a comment about what domain expertise a reviewer is expected to bring and what area of the enhancement you expect them to focus on. For example: - "@networkguru, for networking aspects, please look at IP bootstrapping aspect"
   - "@openshift/openshift-team-windows-containers"
-  - TBD
+  - TBD -- sdn?
 approvers:
   - "@aravindhp"
   - TBD
@@ -12,8 +12,9 @@ api-approvers: # In case of new or modified APIs or API extensions (CRDs, aggreg
   - None
 creation-date: 2023-02-16
 last-updated: 2023-03-02
-tracking-link: # link to the tracking ticket (for example: Jira Feature or Epic ticket) that corresponds to this enhancement
-  - [Windows Node Proxy Configuration epic](https://issues.redhat.com/browse/WINC-802)
+tracking-link:
+  - Feature: [OCPBU-22: Support cluster-wide proxy on Windows Containers feature](https://issues.redhat.com/browse/OCPBU-22)
+  - Epic: [WINC-802: Windows Node Proxy Configuration](https://issues.redhat.com/browse/WINC-802)
 see-also:
   - "/enhancements/proxy/global-cluster-egress-proxy.md"
 ---
@@ -31,83 +32,64 @@ see-also:
 
 ## Summary
 
-The `Summary` section is incredibly important for producing high quality
-user-focused documentation such as release notes or a development roadmap. It
-should be possible to collect this information before implementation begins in
-order to avoid requiring implementors to split their attention between writing
-release notes and implementing the feature itself.
+The goal of this enhancement proposal is to allow Windows nodes to consume and use global egress proxy configuration
+when making external requests outside the cluster's internal network. OpenShift customers may require that external
+traffic is passed through a proxy for security reasons, and Windows instances are no exception.
 
-A good summary is no more than one paragraph in length. More detail
-should go into the following sections.
+There already exists a protocol for publishing 
+[cluster-wide proxy](https://docs.openshift.com/container-platform/4.12/networking/enable-cluster-wide-proxy.html) 
+settings which is consumed by different OpenShift components (Linux worker nodes and infra nodes, CVO and OLM managed 
+operators); Windows worker nodes do not currently consume or respect proxy settings. This effort will work to plug this
+feature disparity by making the Windows Machine Config Operator (WMCO) proxy aware at install time and reactive during
+runtime.
 
 ## Motivation
 
-This section is for explicitly listing the motivation, goals and non-goals of
-this proposal. Describe why the change is important and the benefits to users.
-
-### User Stories
-
-User stories can be found within the node proxy epic: [WINC-802](https://issues.redhat.com/browse/WINC-802)
-Detail the things that people will be able to do if this is implemented and
-what goal that allows them to achieve. In each story, explain who the actor
-is based on their role, explain what they want to do with the system,
-and explain the underlying goal they have, what it is they are going to
-achieve with this new feature.
-
-Use the standard three part formula:
-
-> "As a _role_, I want to _take some action_ so that I can _accomplish a
-goal_."
-
-Make the change feel real for users, without getting bogged down in
-implementation details.
-
-Here are some example user stories to show what they might look like:
-
-* As an OpenShift engineer, I want to write an enhancement, so that I can get feedback on my design and 
-build consensus about the approach to take before starting the implementation.
-* As a product manager, I want to review this enhancement proposal, so that I can make sure the customer 
-requirements are met by the design.
-* As an administrator, I want a one-click OpenShift installer, so that I can easily set up a new cluster
-without having to follow a long set of operations.
-
-In each example, the persona's goal is clear, and the goal is clearly provided
-by the capability being described.
-The engineer wants feedback on their enhancement from their peers, and writing
-an enhancement allows for that feedback.
-The product manager wants to make sure that their customer requirements are fulfilled,
-reviewing the enhancement allows them to check that.
-The administrator wants to set up his OpenShift cluster as easily as possible, and
-reducing the install to a single click simplifies that process.
-
-Here are some real examples from previous enhancements:
-* [As a member of OpenShift concerned with the release process (TRT, dev, staff engineer, maybe even PM),
-I want to opt in to pre-release features so that I can run periodic testing in CI and obtain a signal of 
-feature quality.](https://github.com/openshift/enhancements/blob/master/enhancements/installer/feature-sets.md#user-stories)
-* [As a cloud-provider affiliated engineer / platform integrator / RH partner
-I want to have a mechanism to signal OpenShift's built-in operators about additional
-cloud-provider specific components so that I can inject my own platform-specific controllers into OpenShift
-to improve the integration between OpenShift and my cloud provider.](https://github.com/openshift/enhancements/blob/master/enhancements/cloud-integration/infrastructure-external-platform-type.md#user-stories)
-* [As an OpenShift cluster administrator, I want to add worker nodes to my
-existing single control-plane node cluster, so that it'll be able to meet
-growing computation demands.](https://github.com/openshift/enhancements/blob/master/enhancements/single-node/single-node-openshift-with-workers.md#user-stories)
-
-Include a story on how this proposal will be operationalized:
-life-cycled, monitored and remediated at scale.
+The motivation here is to expand the Windows containers production use case, enabling users to add Windows nodes and run 
+workloads easily and successfully in a proxied cluster. This is an extremely important ask for customer environments
+where Windows nodes are often tasked with pulling images from secure registries or making requests to off-cluster
+services, and those that use a custom public key infrastructure.
 
 ### Goals
 
-Summarize the specific goals of the proposal. How will we know that
-this has succeeded?  A good goal describes something a user wants from
-their perspective, and does not include the implementation details
-from the proposal.
+* Create an automated mechanism for WMCO to consume global egress proxy config from existing platform recources.
+  Includes:
+  + proxy connection information (http/https URLs)
+  + additional certificate authorities required to validate the proxy's certificate
+  + list of networks that should bypass the proxy (no-proxy hostnames, domains, IP addresses or other network CIDRs)
+* Configure the proxy settings in WMCO-managed components on Windows nodes (kubelet, containerd runtime)
+* Pick up changes to the cluster-wide proxy settings during cluster runtime
+* Maintain normal functionality in non-proxied clusters
 
 ### Non-Goals
 
-What is out of scope for this proposal? Listing non-goals helps to
-focus discussion and make progress. Highlight anything that is being
-deferred to a later phase of implementation that may call for its own
-enhancement.
+* Anything to do with *ingress* or reverse proxy settings is out of scope
+* Monitor or automatically replace expired CAs in the cluster's trust bundle or Windows components
+
+### User Stories
+
+User stories can also be found within the node proxy epic: [WINC-802](https://issues.redhat.com/browse/WINC-802)
+
+#### Story 1 - [WINC-637: Set cluster-wide proxy environment variables on Windows instance](https://issues.redhat.com/browse/WINC-637)
+
+As an administrator of a network with strict traffic egress policies,
+I want Windows nodes on my OpenShift cluster to successfully make proxied
+external requests for images and other external service interactions.
+This includes updating proxy settings when the cluster-wide config changes.
+
+#### Story 2 - [WINC-633: Support custom CA certificates for cluster-wide proxy](https://issues.redhat.com/browse/WINC-633)
+
+As an administrator of a network using a man-in-the-middle proxy which
+is performing traffic decryption/re-encryption, I want to provide valid
+CAs that can trust my proxy's certificate to Windows nodes so they and
+their workloads will trust my proxy.
+
+#### Story 3 - [WINC-688: Update Proxy certs on Windows instances when the certs are rotated](https://issues.redhat.com/browse/WINC-688)
+
+As an OpenShift administrator, I want user-provided proxy CA certificates 
+to be automatically updated on Windows nodes when I manually rotate them 
+in cluster-wide resources so that Windows nodes use the latest trust bundle
+and outbound traffic continues to respect proxy settings.
 
 ## Proposal
 
