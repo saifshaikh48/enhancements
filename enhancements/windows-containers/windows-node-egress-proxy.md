@@ -11,15 +11,15 @@ approvers:
 api-approvers: # In case of new or modified APIs or API extensions (CRDs, aggregated apiservers, webhooks, finalizers). If there is no API change, use "None"
   - None
 creation-date: 2023-02-16
-last-updated: 2023-03-02
+last-updated: 2023-02-27
 tracking-link:
-  - Feature: [OCPBU-22: Support cluster-wide proxy on Windows Containers feature](https://issues.redhat.com/browse/OCPBU-22)
-  - Epic: [WINC-802: Windows Node Proxy Configuration](https://issues.redhat.com/browse/WINC-802)
+  - Feature: "https://issues.redhat.com/browse/OCPBU-22"
+  - Epic: "https://issues.redhat.com/browse/WINC-802"
 see-also:
-  - "/enhancements/proxy/global-cluster-egress-proxy.md"
-  - [Cluster-wide Egress Proxy Initiative doc](https://docs.google.com/document/d/12bBF7GTgscW8B3apVU2WagtQpWh-PWk2tOWiD0dsdfU/edit)
-  - [Proxy Bootstrap Workflow](https://docs.google.com/document/d/1y0t0yEOSnKc4abxsjxEQjrFa1AP8iHcGyxlBpqGLO08/edit#heading=h.y6ieif41wmlc)
-  - [Operator Proxy Support Dev Workflow](https://docs.google.com/document/d/1otp9v5KkoOgq5vhN7ieBpdFhRIIy6z2yuaS_0rjm6wQ/edit#heading=h.dzcnuz4qv07o)
+  - "https://github.com/openshift/enhancements/blob/master/enhancements/proxy/global-cluster-egress-proxy.md"
+  - Cluster-wide Egress Proxy Initiative doc: "https://docs.google.com/document/d/12bBF7GTgscW8B3apVU2WagtQpWh-PWk2tOWiD0dsdfU/edit"
+  - Proxy Bootstrap Workflow: "https://docs.google.com/document/d/1y0t0yEOSnKc4abxsjxEQjrFa1AP8iHcGyxlBpqGLO08/edit#heading=h.y6ieif41wmlc"
+  - Operator Proxy Support Dev Workflow: "https://docs.google.com/document/d/1otp9v5KkoOgq5vhN7ieBpdFhRIIy6z2yuaS_0rjm6wQ/edit#heading=h.dzcnuz4qv07o"
 ---
 
 # Windows Node Cluster-Wide Egress Proxy
@@ -38,11 +38,11 @@ see-also:
 The goal of this enhancement proposal is to allow Windows nodes to consume and use global egress proxy configuration
 when making external requests outside the cluster's internal network. OpenShift customers may require that external
 traffic is passed through a proxy for security reasons, and Windows instances are no exception. There already exists a
-protocol for publishing [cluster-wide proxy](https://docs.openshift.com/container-platform/4.12/networking/enable-cluster-wide-proxy.html) settings, which is consumed by different OpenShift components (Linux worker nodes and infra nodes, CVO and OLM managed
-operators); Windows worker nodes do not currently consume or respect proxy settings. This effort will work to plug this
+protocol for publishing [cluster-wide proxy](https://docs.openshift.com/container-platform/4.12/networking/enable-cluster-wide-proxy.html) 
+settings, which is consumed by different OpenShift components (Linux worker nodes and infra nodes, CVO and OLM managed
+operators) but Windows worker nodes do not currently consume or respect proxy settings. This effort will work to plug
 feature disparity by making the [Windows Machine Config Operator](https://github.com/openshift/windows-machine-config-operator)
-(WMCO) proxy aware at install time and reactive during runtime. 
-All references to proxy from now on refers to the OpenShift global/cluster-wide egress proxy.
+(WMCO) proxy aware at install time and reactive during runtime.
 
 ## Motivation
 
@@ -65,25 +65,16 @@ services, and those that use a custom public key infrastructure.
 ### Non-Goals
 
 * Anything to do with *ingress* or reverse proxy settings is out of scope
-* Monitor or automatically replace expired CAs in the cluster's trust bundle or Windows components
+* Monitor cert expiration dates or automatically replace expired CAs in the cluster's trust bundle
 
-## Proposal & Justification
-
-<!-- This is where we get down to the nitty gritty of what the proposal
-actually is. Describe clearly what will be changed, including all of
-the components that need to be modified and how they will be
-different. Include the reason for each choice in the design and
-implementation that is proposed here, and expand on reasons for not
-choosing alternatives in the Alternatives section at the end of the
-document. -->
+## Proposal
 
 There are two major undertakings:
 - Adding proxy environment variables (`NO_PROXY`, `HTTP_PROXY`, and `HTTPS_PROXY`) to Windows nodes.
 - Adding the proxy’s trusted CA certificate bundle to Windows nodes' local trust store. This may require rebooting.
 
 Since WMCO is a day 2 operator, it will pick up proxy settings during runtime regardless of if proxy settings were set
-during cluster install time or at some point during the cluster's lifetime. When global proxy settings are updated
-(e.g. when expired certs are rotated by a user), WMCO will react to this by:
+during cluster install time or at some point during the cluster's lifetime. When global proxy settings are updated, WMCO will react by:
 - overriding proxy vars on the instance with the new values
 - copying over the new trust bundle to Windows instances (old one should be removed) and updating each instance's local trust store
 
@@ -125,27 +116,19 @@ There are 3 different workflows that affect the cluster-wide proxy use case.
 3. A cluster administrator changes or removes existing global proxy settings during cluster runtime
 
 The first scenario would occur through their [install-config.yaml](https://docs.openshift.com/container-platform/4.12/networking/configuring-a-custom-pki.html#installation-configure-proxy_configuring-a-custom-pki).
-The latter 2 scenarios occur through changing the []`Proxy` object named `cluster`](https://docs.openshift.com/container-platform/4.12/networking/enable-cluster-wide-proxy.html#nw-proxy-configure-object_config-cluster-wide-proxy)
+The latter 2 scenarios occur through changing the [`Proxy` object named `cluster`](https://docs.openshift.com/container-platform/4.12/networking/enable-cluster-wide-proxy.html#nw-proxy-configure-object_config-cluster-wide-proxy)
 or by modifying certificates present in their [trustedCA ConfigMap](https://docs.openshift.com/container-platform/4.12/security/certificates/updating-ca-bundle.html#ca-bundle-replacing_updating-ca-bundle).
 
 In each case, Windows nodes can be joined to the cluster after altering proxy settings in which case proxy settings would
 be applied initial during node configuration. In the latter 2 scenarios, Windows nodes may already be existing on the
 cluster in which case they would need to be updated.
 
-### Implementation Details/Notes/Constraints [optional]
-
-Some infrastructures require instances to access certain endpoints to retreive their metadata for bootstrapping. In this
-case, platform-specific logic could be introduced to inject additional `no-proxy` entries such as `169.254.169.254` and
-`.${REGION}.compute.internal`. However, this may already be handled for us by components like the CNO.
-
-### Risks and Mitigations
+### Risks, Drawbacks, and Mitigations
 
 The risks and mitigations are similar to those on the [Linux side of the cluster-wide proxy](https://github.com/openshift/enhancements/blob/master/enhancements/proxy/global-cluster-egress-proxy.md#risks-and-mitigations).
 Although cluster infra resources already do a best effort validation on the user-provided proxy URL schema and CAs,
 a user could provide non-functional proxy settings/certs. This would be propogated to their Windows nodes and workloads,
 taking down existing application connectivity and preventing new Windows nodes from being bootstrapped.
-
-### Drawbacks
 
 The only drawbacks are the increased complexity of WMCO and the potential complexity of debugging customer cases that
 involve a proxy setup, since it would be extremely difficult to set up an accurate replicatation environment.
@@ -156,7 +139,7 @@ behavior of Windows nodes/workloads in proxied clusters, and comfortable spinnin
 
 N/A, as no CRDs, admission and conversion webhooks, aggregated API servers, or finalizers will be added or modified.
 Only the WMCO will be extended which is an optional operator with its own lifecycle and SLO/SLAs, a 
-[tier 3 OpenShift API](https://docs.openshift.com/container-platform/4.12/rest_api/understanding-api-support-tiers.html#api-tiers_understanding-api-tiers)).
+[tier 3 OpenShift API](https://docs.openshift.com/container-platform/4.12/rest_api/understanding-api-support-tiers.html#api-tiers_understanding-api-tiers).
 
 ### Operational Aspects of API Extensions
 
@@ -164,72 +147,48 @@ N/A
 
 #### Failure Modes & Support Procedures
 
-If either of the underlying mechanisms fail (those that publish proxy config to cluster resources or those that consume
-these published config settings), Windows nodes will become proxy unaware. This could involve an issue with the cluster
-network operator, OLM, WMCO, or the user-provided proxy settings. This would result in all future egress traffic
-circumventing the proxy, which could affect inter-pod communication, exisitng application availablity, and security.
-Also, the pause image may not be able to be fetched, preventing new Windows nodes from being bootstrapped. This would
-require manual intervention from the cluster admin and/or a new release fixing whatever bug is causing the problem.
-In general the support procedures for WMCO will remain the same.
+In general the support procedures for WMCO will remain the same. There are two underlying mechanisms we rely on, the
+publishing of proxy config to cluster resources and the comsuming of the published config. If either of the underlying
+mechanisms fail, Windows nodes will become proxy unaware. This could involve an issue with the user-provided proxy
+settings, the cluster network operator, OLM, or WMCO. This would result in all future egress traffic circumventing the
+proxy, which could affect inter-pod communication, existing application availablity, and security. Also, the pause image
+may not be able to be fetched, preventing new Windows nodes from being bootstrapped. This would require manual
+intervention from the cluster admin or a new release fixing whatever bug is causing the problem.
 
 ## Design Details
 
 ### Configuring Proxy Environment Variables
 
 As it stands today, the source of truth for cluster-wide proxy settings is the `Proxy` resource with the name `cluster`.
-The contents of the resource are both user-defined, as well as adjusted by the cluster network operator (CNO). OLM is a
-subscriber to these settings -- it forwards the settings to the CSV of managed operators, so the WMCO container will
-automatically get the required `NO_PROXY`, `HTTP_PROXY`, and `HTTPS_PROXY` environment variables on startup. In fact,
-OLM will update and restart the operator pod with proper environment variables if the `Proxy` resource changes.
+The contents of the resource are both user-defined, as well as adjusted by the cluster network operator (CNO). Some
+platforms require instances to access certain endpoints to retreive metadata for bootstrapping. CNO has logic to inject
+additional `no-proxy` entries such as `169.254.169.254` and `.${REGION}.compute.internal` into the `Proxy` resource.
+
+OLM is a subscriber to these `Proxy` settings -- it forwards the settings to the CSV of managed operators, so the WMCO
+container will automatically get the required `NO_PROXY`, `HTTP_PROXY`, and `HTTPS_PROXY` environment variables on startup.
+In fact, OLM will update and restart the operator pod with proper environment variables if the `Proxy` resource changes.
 
 On the Linux side this is achieved through `MachineConfigs` -- when global proxy settings are changed, the ignition
 config is re-rendered by MCO (for whom proxy info is injected by CVO) to include a systemd unit 
 `EnvironmentFile=/etc/mco/proxy.env`, with proxy vars set in this file.
 
 Knowing this, there are a few possible ways for WMCO to retrieve the proxy variables
-* WMCO can read the environment variables from its own pod spec. This is the most efficient and straightfoward solution.
-  However, it is difficult to detect if the operator restarted due to proxy env var changes or another reason, so it
-  could prove challenging to figure out when we need to update node's env vars (every time the operator restarts?).
+* WMCO can read the environment variables from its own pod spec. The difficulty of this approach comes from figuring out
+  when we need to update node's env vars. Ideally such reconfiguring happens only when the values change in the pod spec,
+  but how can we detect if the proxy env vars changed or the operator just restarted for some other reason?
+  We want to avoid kicking off reconfigurations of all nodes every time the operator restarts.
 * WMCO could watch the `rendered-worker` `MachineConfig` for changes and parse info from the `proxy.env` file.
   This could be an expensive operation, but since we already parse ignition from the `MachineConfig` as part of node
-  bootstrap, the technical cost and complexity is reduced.
+  bootstrap, the technical cost and complexity is reduced. I lean towards this option.
 
 Then, once it has the required values, the operator will set the 3 proxy environment variables on the Windows instance
-during node configuration/reconciling, either through command prompt or Powershell.
+during node configuration/reconciling, either through command prompt or Powershell -- whichever is the default shell.
 We may have to separately enable [Powershell to use the proxy vars](https://martin.hoppenheit.info/blog/2015/using-powershell-behind-proxy/).
 
 ### Configuring Custom Trusted Certificates
 
-1. Update the operator’s Deployment to support trusted CA injection by mounting the trusted CA ConfigMap
-<!-- TODO: does OLM already do this, as it does with the proxy env vars injection? -->
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: my-operator
-  namespace: openshift-my-operator
-  annotations:
-    config.openshift.io/inject-proxy: ingress-operator
-spec:
-     <SNIP>
-      containers:
-        - name: my-operator
-          volumeMounts:
-          - name: trusted-ca
-            mountPath: /etc/pki/ca-trust/extracted/pem
-            readOnly: true
-      - name: trusted-ca
-        configMap:
-          name: trusted-ca
-          items:
-            - key: ca-bundle.crt
-              path: tls-ca-bundle.pem
-```
-
-2. Add the trusted CA injection request ConfigMap to your operator’s manifests directory. 
+1. Add the trusted CA injection request ConfigMap to the operator’s manifests directory. 
    This is a resource that will be updated by CNO based on the content of the global `Proxy` resource.
-
 ```yaml
 apiVersion: v1
 kind: ConfigMap
@@ -239,22 +198,54 @@ metadata:
   labels:
     config.openshift.io/inject-trusted-cabundle: "true"
   name: trusted-ca
-  namespace: openshift-my-operator
+  namespace: openshift-windows-machine-config-operator
 ```
 
-3. Create a file watcher that watches changes to the mounted trust bundle that kills the main operator process and
-   allows the backing k8s Deployment to start a new Pod that mounts the updated trust bundle.
+2. Read the trusted CA ConfigMap data and use it to update the local trust store of Windows nodes during configuration.
 
-- Implementation example: [cluster-ingress-operator](https://github.com/openshift/cluster-ingress-operator/pull/334)
-
-4. Use the trusted CA ConfigMap data to update the local trust store of Windows nodes during configuration/reconciling.
-   I envision this being done through a Kubernetes controller that watches the `trusted-ca` ConfigMap for change events.
-   On change, copy the new trust bundle to Windows instances. Delete old certificates (i.e. not in the current trust
-   bundle) off the instance and import new ones.
+3. Reconcile when the custom CA bundle changes. I envision this being done through a Kubernetes controller that watches
+   the `trusted-ca` ConfigMap for create/update/delete events. On change, copy the new trust bundle to Windows instances,
+   deleting old certificates (i.e. not present in the current trust bundle) off the instance and importing new ones.
 
 How-to references:
  * [import cert via powershell](https://docs.microsoft.com/en-us/powershell/module/pki/import-certificate?view=windowsserver2019-ps)
- * [delete via powershell](https://stackoverflow.com/questions/37228851/delete-certificate-from-computer-store)
+ * [delete cert via powershell](https://stackoverflow.com/questions/37228851/delete-certificate-from-computer-store)
+
+--
+
+Also note that there is another way to get the data required in step 2 rather than accessing the ConfigMap directly,
+  but I prefer not to follow it. For completeness, I will list it out here.
+  * Update the operator’s Deployment to support trusted CA injection by mounting the trusted CA ConfigMap
+  ```yaml
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: windows-machine-config-operator
+    namespace: openshift-windows-machine-config-operator
+    annotations:
+      config.openshift.io/inject-proxy: windows-machine-config-operator
+  spec:
+      ...
+        containers:
+          - name: windows-machine-config-operator
+            volumeMounts:
+            - name: trusted-ca
+              mountPath: /etc/pki/ca-trust/extracted/pem
+              readOnly: true
+        - name: trusted-ca
+          configMap:
+            name: trusted-ca
+            items:
+              - key: ca-bundle.crt
+                path: tls-ca-bundle.pem
+  ...
+  ```
+  * Create a file watcher that watches changes to the mounted trust bundle that kills the main operator process and
+    allows the backing k8s Deployment to start a new Pod that mounts the updated trust bundle. 
+    Implementation example: [cluster-ingress-operator](https://github.com/openshift/cluster-ingress-operator/pull/334)
+  * But then the same concern about avoiding unnecessary reconciliation remains, as in the [previous section](#configuring-custom-trusted-certificates): 
+    how to detect if the trust bundle file changed or the operator just restarted for another reason?
+---
 
 ### Test Plan & Infrastructure Needed
 
@@ -264,16 +255,16 @@ from the release repo and add a job to the WMCO repo's CI config to test with. W
 sure the addition of the egress proxy feature does not break existing functionality. If we release a community offering
 with this feature, we will need to add a CI job using a cluster-wide proxy on OKD.
 
-### Open Questions [optional]
+### Open Questions
 
-> 1. Can we use the existing [CI proxy job](https://github.com/openshift/release/tree/master/ci-operator/step-registry/ipi/conf/aws/proxy)
+> 1. Is testing cluster-wide proxy in CI on __only AWS__ okay? This is consistent with what the Linux side does.
+     QE may want to cover all platforms though.
+> 2. Can we use the existing [CI proxy job](https://github.com/openshift/release/tree/master/ci-operator/step-registry/ipi/conf/aws/proxy)
      to test an HTTPS proxy that requires custom certs to access, or can we only test HTTP and no-proxy using it? If the
-     latter, we'll need to explore how to do this in EC2 and add improvments to the linked workflow.
->> 2. Is testing cluster-wide proxy in CI on __only AWS__ okay? This is consistent with what the Linux side does.
-      QE may want to cover all platforms.
+     latter, we'll need to explore how to do this in EC2 and add improvements to the linked workflow.
 > 3. Do user-created Windows workloads need proxy config set in their spec? Does this already happen for Linux
      counterparts? e.g. setting proxy env vars and mounting the trustedCA ConfigMap as a volume to the deployment spec
-     I don't think this should be WMCO's responsibility, so is this on another team or upon the user?
+     Regardless, I don't think this should be WMCO's responsibility, so is this on another team or upon the user?
   <!-- TODO: update non-goals based on the answer to number 3  -->
 
 ### Graduation Criteria
@@ -305,7 +296,7 @@ current WMCO upgrade strategy. Once customers are on WMCO 9.0.0:
 * otherwise, they can configure one and the Windows nodes will be automatically updated to use it by the operator
 
 When deconfiguring Windows instances, proxy settings will be cleared from the node. This involves undoing some node
-config steps i.e. unsetting proxy variables and deleting additional certificates from the machine's localtrust store.
+config steps i.e. unsetting proxy variables and deleting additional certificates from the machine's local trust store.
 This scenario will occur when upgrading both BYOH and Machine-backed Windows nodes.
 
 In both relevant OCP versions, OLM consumes global proxy settings and injects them into managed operators like WMCO.
@@ -328,7 +319,7 @@ the WMCO Github repo.
 
 Planned GA of the feature: WMCO v9.0.0 in OCP 4.14
 
-## Alternatives
+## Alternatives & Justification
 
 * A workaround that would deliver the same value proposed by this enhancemnt would be to validate and provide guidance
   to make cluster administrators responsible for manually propogating proxy settings to each of their Windows nodes, and
