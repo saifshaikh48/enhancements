@@ -81,7 +81,7 @@ during cluster install time or at some point during the cluster's lifetime. When
 - overriding proxy vars on the instance with the new values
 - copying over the new trust bundle to Windows instances (old one should be removed) and updating each instance's local trust store
 
-All changes detailed in this enhacement proposal will be limited to the Windows Machine Config Operator.
+All changes detailed in this enhancement proposal will be limited to the Windows Machine Config Operator.
 
 ### User Stories
 
@@ -122,9 +122,9 @@ The first scenario would occur through their [install-config.yaml](https://docs.
 The latter 2 scenarios occur through changing the [`Proxy` object named `cluster`](https://docs.openshift.com/container-platform/4.12/networking/enable-cluster-wide-proxy.html#nw-proxy-configure-object_config-cluster-wide-proxy)
 or by modifying certificates present in their [trustedCA ConfigMap](https://docs.openshift.com/container-platform/4.12/security/certificates/updating-ca-bundle.html#ca-bundle-replacing_updating-ca-bundle).
 
-In each case, Windows nodes can be joined to the cluster after altering proxy settings in which case proxy settings would
-be applied initial during node configuration. In the latter 2 scenarios, Windows nodes may already be existing on the
-cluster in which case they would need to be updated.
+In all cases, Windows nodes can be joined to the cluster after altering proxy settings, which would result in WMCO 
+applying proxy settings during initial node configuration. In the latter 2 scenarios, Windows nodes may already exist in
+the cluster, in which case WMCO would reconcile to update them.
 
 ### Risks, Drawbacks, and Mitigations
 
@@ -180,13 +180,13 @@ the `proxy.env` file. This could be an expensive operation, but since we already
 as part of node bootstrap, the technical cost and complexity is reduced.
 
 Then, once it has the required values, the operator will set the 3 proxy environment variables on the Windows instance
-during node configuration/reconciling through Powershell. Since Windows services read environment from the system 
-registry and the registry does not update until a shutdown/startup cycle, this will require rebooting the instance.
+during node configuration/reconciling through Powershell.
 ```powershell
-$Env:<variable-name> = "<new-value>"
+[Environment]::SetEnvironmentVariable('<name>', '<value>', 'Machine')
 ```
-We may have to separately enable [Powershell to use the proxy vars](https://martin.hoppenheit.info/blog/2015/using-powershell-behind-proxy/).
-
+Note that we will set these variables at the `Machine` scope, the highest level, to ensure all WMCO-managed services
+(kubelet, containerd, etc.) will inherit them. Since Windows services read environment vars from the system registry,
+and the registry does not update until a shutdown/startup cycle, this will require rebooting the instance.
 
 ### Configuring Custom Trusted Certificates
 
@@ -240,12 +240,13 @@ Post:
 ```
 
 Existing e2e tests will ensure the addition of the egress proxy feature does not break existing functionality.
+We will add a few test cases to explicitly check the state of proxy settings on the Windows node.
 When we release a community offering with this feature, we will add a similar CI job using a cluster-wide proxy on OKD.
-QE may want to cover all platforms though when validating this feature.
+QE may want to cover all platforms when validating this feature.
 
 ### Release Plan / Graduation Criteria
 
-The feature associated with this enhacement is targeted to land in the offical Red Hat operator version of WMCO 9.0.0
+The feature associated with this enhancement is targeted to land in the offical Red Hat operator version of WMCO 9.0.0
 within OpenShift 4.14 timeframe. The normal WMCO release process will be followed as the functionality described in this
 enhancement is integrated into the product.
 
@@ -290,22 +291,26 @@ the WMCO Github repo.
 
 ### Design
 
-* A workaround that would deliver the same value proposed by this enhancement would be to validate and provide guidance
-  to make cluster administrators responsible for manually propogating proxy settings to each of their Windows nodes, and
-  underlying OpenShift managed components. This is not a feasible alternative as even manual node changes can be
-  ephemeral. WMCO would reset config changes to OpenShift managed Windows services in the event of a node reconcilition.
 * Another possible way for WMCO to retrieve the proxy variables is to read them from its own pod spec, as these env
   vars are injected and updated by OLM. The difficulty of this approach comes from figuring out when we need to update
   node's env vars. Ideally such reconfiguring happens only when the values change in the pod spec, but how can we detect
   if the proxy env vars changed or the operator just restarted for some other reason? We want to avoid kicking off
   reconfigurations of all nodes every time the operator restarts.
-* In order to avoid a system reboot after setting node environment variables, we can reconcile services by setting their
-  environment variables, and then restarting the services. These changes are ephemeral, though, if the instance reboots.
-  ```powershell
-  [string[]] $envVars = @("HTTP_PROXY=http://<username>:<pswd>@<ip>:<port>", "NO_PROXY=123.example.com,10.88.0.0/16")
-  Set-ItemProperty HKLM:SYSTEM\CurrentControlSet\Services\<$SERVICE_NAME> -Name Environment -Value $envVars
-  Restart-Service <$SERVICE_NAME>
-  ```
+* In order to avoid a system reboot after setting node environment variables, we can reconcile services by setting their process-level
+  environment variables, and then restarting the services. These changes are ephemeral though, if the instance reboots. Either:
+  * For each service
+    ```powershell
+    [string[]] $envVars = @("HTTP_PROXY=", "NO_PROXY=123.example.com,10.88.0.0/16")
+    Set-ItemProperty HKLM:SYSTEM\CurrentControlSet\Services\<$SERVICE_NAME> -Name Environment -Value $envVars
+    Restart-Service <$SERVICE_NAME>
+    ```
+  * For the Powershell session
+    ```powershell
+    $Env:HTTP_PROXY = "http://<username>:<pswd>@<ip>:<port>"
+    $Env:NO_PROXY = "123.example.com,10.88.0.0/16"
+    # then restart all WMCO-managed services
+    ```
+  
 * Also note that there is another way to get the [trusted CA data](#configuring-custom-trusted-certififactes) required
   rather than accessing the ConfigMap directly, but it leaves open the same concern around unnecessary reconciliations
   -- how to detect if the operator restart was due to a trust bundle file change or the pod just restarted for another
@@ -338,6 +343,10 @@ the WMCO Github repo.
   * Create a file watcher that watches changes to the mounted trust bundle that kills the main operator process and
     allows the backing k8s Deployment to start a new Pod that mounts the updated trust bundle. 
     Implementation example: [cluster-ingress-operator](https://github.com/openshift/cluster-ingress-operator/pull/334)
+* A workaround that would deliver the same value proposed by this enhancement would be to validate and provide guidance
+  to make cluster administrators responsible for manually propogating proxy settings to each of their Windows nodes, and
+  underlying OpenShift managed components. This is not a feasible alternative as even manual node changes can be
+  ephemeral. WMCO would reset config changes to OpenShift managed Windows services in the event of a node reconcilition.
 
 ### Testing
 
