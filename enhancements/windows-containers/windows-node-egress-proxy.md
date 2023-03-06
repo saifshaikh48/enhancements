@@ -10,7 +10,7 @@ approvers:
 api-approvers:
   - None
 creation-date: 2023-02-16
-last-updated: 2023-02-28
+last-updated: 2023-03-07
 tracking-link:
   - Feature: "https://issues.redhat.com/browse/OCPBU-22"
   - Epic: "https://issues.redhat.com/browse/WINC-802"
@@ -75,7 +75,7 @@ There are two major undertakings:
 Since WMCO is a day 2 operator, it will pick up proxy settings during runtime regardless of if proxy settings were set
 during cluster install time or at some point during the cluster's lifetime. When global proxy settings are updated, WMCO will react by:
 - overriding proxy vars on the instance with the new values
-- copying over the new trust bundle to Windows instances (old one should be removed) and updating each instance's local trust store
+- copying over the new trust bundle to Windows instances and updating each instance's local trust store (old certs should be removed) 
 
 All changes detailed in this enhancement proposal will be limited to the Windows Machine Config Operator and its 
 sub-component, Windows Instance Config Daemon (WICD).
@@ -83,27 +83,6 @@ sub-component, Windows Instance Config Daemon (WICD).
 ### User Stories
 
 User stories can also be found within the node proxy epic: [WINC-802](https://issues.redhat.com/browse/WINC-802)
-
-#### Story 1 - [WINC-637: Set cluster-wide proxy environment variables on Windows instance](https://issues.redhat.com/browse/WINC-637)
-
-As an administrator of a network with strict traffic egress policies,
-I want Windows nodes on my OpenShift cluster to successfully make proxied
-external requests for images and other external service interactions.
-This includes updating proxy variables when the cluster-wide config changes.
-
-#### Story 2 - [WINC-633: Support custom CA certificates for cluster-wide proxy](https://issues.redhat.com/browse/WINC-633)
-
-As an administrator of a network using a man-in-the-middle proxy which
-is performing traffic decryption/re-encryption, I want to provide valid
-CAs that can trust my proxy's certificate to Windows nodes so they and
-their workloads will trust my proxy.
-
-#### Story 3 - [WINC-688: Update Proxy certs on Windows instances when the certs are rotated](https://issues.redhat.com/browse/WINC-688)
-
-As an OpenShift administrator, I want user-provided proxy CA certificates
-to be automatically updated on Windows nodes when I manually rotate them
-in cluster-wide resources so that Windows nodes use the latest trust bundle
-and outbound traffic continues to respect proxy settings.
 
 ### Workflow Description and Variations
 
@@ -121,7 +100,7 @@ or by modifying certificates present in their [trustedCA ConfigMap](https://docs
 
 In all cases, Windows nodes can be joined to the cluster after altering proxy settings, which would result in WMCO
 applying proxy settings during initial node configuration. In the latter 2 scenarios, Windows nodes may already exist in
-the cluster, in which case WMCO will react to the changes, updating the state of each instance.
+the cluster, in which case WMCO will react to the changes by updating the state of each instance.
 
 ### Risks, Drawbacks, and Mitigations
 
@@ -168,33 +147,39 @@ OLM is a subscriber to these `Proxy` settings -- it forwards the settings to the
 container will automatically get the required `NO_PROXY`, `HTTP_PROXY`, and `HTTPS_PROXY` environment variables on startup.
 In fact, OLM will update and restart the operator pod with proper environment variables if the `Proxy` resource changes.
 
-WMCO the store the 3 proxy variables and their values in the `windows-services` ConfigMap.
-This will be done by adding a `EnvironmentVars` key to the services ConfigMap spec.
-The new key will be a list of name-value pairs representing environment variables to be set on Windows instances:
+In proxy-enabled clusters, WMCO will store the 3 proxy variables and their values in the 
+[`windows-services` ConfigMap](./health-management.md#services-configmap).
+In clusters without a global proxy, these variables will not be present in the services ConfigMap.
+This will be done by adding a `EnvironmentVars` key to the top level of the services ConfigMap spec.
+The new key will be an array of name-value pairs representing environment variables to be set on Windows instances.
 ```json
-[
-  {
-    "name": "name of the environment variable",
-    "value": "value the variable should be set to on the instance"
-  }
-]
+{
+  "EnvironmentVars": [
+    {
+      "name": "name of the environment variable",
+      "value": "value the variable should be set to on the instance"
+    }
+  ],
+  "Services": "<existing spec>",
+  "Files": "<existing spec>",
+}
 ```
 
-WICD, which uses the ConfigMap data to configure Windows services, will now have the added responsibility to ensure the
-proper setting of these `EnvironmentVars` variables on the instance. 
-1. WICD will check if any env vars changed by comparing each variable's value on the node to the expected value in the
-   ConfigMap. If there is a discrepancy:
-  - WICD will update the env vars if needed, e.g.
-    ```powershell
-    $Env:HTTP_PROXY = "http://<username>:<pswd>@<ip>:<port>"
-    $Env:NO_PROXY = "123.example.com,10.88.0.0/16"
-    ```
-  - WICD will restart each service in the ConfigMap's `Services` list so they pick up the changes
+WICD, which uses the ConfigMap data to configure Windows services, will now have the added responsibility of ensuring
+the `EnvironmentVars` are correctly set on the node and its managed services. WICD will check if any env vars changed by
+comparing each variable's value on the node to the expected value in the ConfigMap. If there is a discrepancy:
+- WICD will update the env vars through a [Windows syscall](https://pkg.go.dev/golang.org/x/sys/windows#SetEnvironmentVariable)
+  which sets the environment variables system-wide, also known as the `Machine` level in Windows. 
+  There are 3 levels to Windows envrionment variables: `Machine`, `User`, and `Process`. `Process` inherits from 
+  `User`, which inherits from the top level of `Machine`, and sub-processes inherit from their parent process. 
+  In order to route all external node traffic through the proxy, we must set the proxy variables at the `Machine` level.
+  This will also allow the required services (including kubelet and containerd) to inherit the desired values.
+- WICD will reboot the instance so Windows services actually pick up the updated env var values from the OS registry.
 
 ### Configuring Custom Trusted Certificates
 
-1. We will add a new resource WMCO's manifests. This ConfigMap will contain a trusted CA injection request label so it
-   can be continually updated by CNO based on any changes to the content of the global `Proxy` resource.
+1. We will add a new ConfigMap to the WMCO's bundle manifests. This resource will contain a trusted CA injection request
+   label so it will be updated by CNO when the global `Proxy` resource changes.
 ```yaml
 apiVersion: v1
 kind: ConfigMap
@@ -207,11 +192,13 @@ metadata:
   namespace: openshift-windows-machine-config-operator
 ```
 
-2. WMCO reads the trusted CA ConfigMap data during node configuration and uses it to update the local trust store of all Windows instances.
+2. For Windows instances that have not yet been configured, WMCO reads the trusted CA ConfigMap data during node
+   configuration and uses it to update the local trust store of all Windows instances.
 
-3. WMCO reacts to changes in the custom CA bundle by reconciling Windows nodes. This will be done through a Kubernetes controller
-   that watches the `trusted-ca` ConfigMap for create/update/delete events. On change, copy the new trust bundle to Windows
-   instances, deleting old certificates (i.e. not present in the current trust bundle) off the instance and importing new ones.
+3. For existing Windows nodes, WMCO reacts to changes in the custom CA bundle by reconciling Windows nodes. This will be
+   done through a Kubernetes controller that watches the `trusted-ca` ConfigMap for create/update/delete events. On
+   change, copy the new trust bundle to Windows instances, deleting old certificates (i.e. not present in the current
+   trust bundle) off the instance and importing new ones.
 
 How-to references:
 * [import cert via powershell](https://docs.microsoft.com/en-us/powershell/module/pki/import-certificate?view=windowsserver2019-ps)
@@ -228,7 +215,7 @@ which creates a vSphere cluster with hybrid-overlay networking and an HTTPS prox
 This workflow will be used to run the existing WMCO e2e test suite to ensure the addition of the egress proxy feature 
 does not break existing functionality. We will add a few test cases to explicitly check the state of proxy settings on Windows
 nodes. When we release a community offering with this feature, we will add a similar CI job using a cluster-wide proxy on OKD.
-QE may want to cover all platforms when validating this feature.
+QE should cover all platforms when validating this feature.
 
 ### Release Plan / Graduation Criteria
 
@@ -277,33 +264,30 @@ the WMCO Github repo.
 
 ### Design
 
-* Another possible way for WMCO to retrieve the proxy variables is to watching the `rendered-worker` `MachineConfig` for
+* Another possible way for WMCO to retrieve the proxy variables is to watch the `rendered-worker` `MachineConfig` for
   changes and parse info from the `proxy.env` file. MCO re-renders this `MachineConfig` when CVO injects new proxy
   variables into its pod spec. The difficulty of this approach comes from figuring out when we need to update
   node's env vars. Ideally such reconfiguring happens only when the values change in the pod spec, but how can we detect
   if the proxy env vars changed or the `rendered-worker` `MachineConfig` was updated some other reason? 
   We want to avoid kicking polling of all nodes every time the `rendered-worker` spec updates.
 
-* There a few other ways to set the required environment variables on the node. There are 3 levels to envrionment variables
-  in Windows: `Machine`, `User`, and `Process`. Process inherits from User, which inherits from Machine, and 
-  sub-processes inherit from their parent process. 
-  So if we set the variables at the Machine level, all the required processes (including kubelet, containerd, etc) will 
-  inherit the desired values.
-  ```powershell
-  [Environment]::SetEnvironmentVariable('<name>', '<value>', 'Machine')
-  ```
-  However, if the values were to change (i.e user changes proxy settings), the instance would have to be rebooted in
-  order for services to load the updated registry values, which we should avoid.
-  
+* There a few other ways to set the required environment variables on the node. 
+  - Using Powershell instead of Windows API calls, e.g.
+    ```powershell
+    [Environment]::SetEnvironmentVariable('HTTP_PROXY', 'http://<username>:<pswd>@<ip>:<port>', 'Machine')
+    [Environment]::SetEnvironmentVariable('NO_PROXY', '123.example.com,10.88.0.0/16', 'Machine')
+    ```
+    But since WICD runs directly on the node, syscalls are more direct and efficient.
   - In order to avoid a system reboot after setting node environment variables, we can reconcile services by setting 
-    their process-level environment variables, and then restarting the individual services. This would require adding a
-    Powershell pre-script to the config for each service in the windows-services ConfigMap.
+    their process-level environment variables, and then restarting the individual services. This can be done by
+    adding a Powershell pre-script to the config for each service in the windows-services ConfigMap.
     ```powershell
     [string[]] $envVars = @("HTTP_PROXY=http://<username>:<pswd>@<ip>:<port>", "NO_PROXY=123.example.com,10.88.0.0/16")
     Set-ItemProperty HKLM:SYSTEM\CurrentControlSet\Services\<$SERVICE_NAME> -Name Environment -Value $envVars
     Restart-Service <$SERVICE_NAME>
     ```
-    But since pre-scripts run everytime we check for changes in service spec, this would be run unnecessarily often.
+    But since pre-scripts run each time WICD checks for changes in service spec, a constant polling operation during
+    operator runtime, this would be run unnecessarily often and bloat each service's configuration.
 
 * Also note that there is another way to get the [trusted CA data](#configuring-custom-trusted-certififactes) required
   rather than accessing the ConfigMap directly, but it leaves open the same concern around unnecessary reconciliations
